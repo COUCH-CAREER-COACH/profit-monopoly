@@ -1,40 +1,43 @@
-# Environment variables
-.env
-.env.*
-!.env.example
-
 # Binaries and build artifacts
-/bin/
-/dist/
+/build/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Go specific
+# Test and coverage
+/coverage/
 *.test
 *.out
-/vendor/
 
-# IDE specific
+# Environment and secrets
+.env
+*.key
+*.pem
+secrets/
+
+# IDE specific files
 .idea/
 .vscode/
 *.swp
 *.swo
-*~
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Debug files
+__debug_bin
+debug.test
+
+# Dependencies
+/vendor/
 
 # Logs
 *.log
 logs/
 
-# System specific
-.DS_Store
-Thumbs.db
-
-# Project specific
-/data/
-/tmp/
-*.key
-*.pem
-*.cert
+# Configuration files with sensitive data
+config*.json
+!config.example.json

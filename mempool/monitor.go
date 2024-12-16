@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"github.com/michaelpento.lv/mevbot/config"
-	"github.com/michaelpento.lv/mevbot/mempool/network"
-	"github.com/michaelpento.lv/mevbot/mempool/network/dpdk"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -15,146 +12,102 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
-	"github.com/iovisor/gobpf/bcc"
-	"github.com/iovisor/gobpf/bpf"
+
+	"github.com/michaelpento.lv/mevbot/config"
+	"github.com/michaelpento.lv/mevbot/mempool/network/dpdk"
 )
 
-type Subscription interface {
-	Err() <-chan error
-	Unsubscribe()
-}
-
-type WorkerConfig struct {
-	Workers   int
-	QueueSize int
-}
-
+// MempoolMonitor manages transaction monitoring and analysis
 type MempoolMonitor struct {
-	cfg    *config.Config
-	client EthClient
-	logger *zap.Logger
-
-	// Enhanced transaction handling
-	txChan    chan *Transaction
-	txPool    *MMapPool
-	txIndexer *MempoolIndexer
-
-	// Performance optimization
-	workers   *AffinityWorkerPool
-	limiter   *rate.Limiter
-	cache     *lru.Cache
-	breaker   *CircuitBreaker
-	ebpfMon   *ebpf.SyscallMonitor
-
-	// Network optimization
+	cfg        *config.Config
+	client     *ethclient.Client
+	logger     *zap.Logger
+	txChan     chan *Transaction
+	txPool     *MMapPool
+	txIndexer  *MempoolIndexer
+	workers    *AffinityWorkerPool
+	limiter    *rate.Limiter
+	cache      *lru.Cache
+	breaker    *CircuitBreaker
 	netManager *dpdk.DPDKManager
-
-	// Metrics and monitoring
-	metrics struct {
-		transactionCount prometheus.CounterVec
-		blockCount       prometheus.CounterVec
+	metrics    struct {
+		transactionCount  *prometheus.CounterVec
+		blockCount       *prometheus.CounterVec
 		txLatency        prometheus.Histogram
 		profitTotal      prometheus.Counter
 		profitPerTx      prometheus.Histogram
 		memoryUsage      prometheus.Gauge
 		goroutineCount   prometheus.Gauge
-		opportunityCount prometheus.CounterVec
+		opportunityCount *prometheus.CounterVec
 		errorCount       prometheus.Counter
 		queueDepth       prometheus.Gauge
 	}
-
-	// Concurrency control
-	mu     sync.RWMutex
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu         sync.RWMutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
-type EthClient interface {
-	SubscribePendingTransactions(ctx context.Context, ch chan<- common.Hash) (Subscription, error)
-	TransactionByHash(ctx context.Context, hash common.Hash) (*types.Transaction, bool, error)
-	Close()
-}
-
-type Transaction struct {
-	*types.Transaction
-	FirstSeen time.Time
-	GasPrice  *big.Int
-	Priority  float64 // Priority score for processing
-}
-
-func NewMempoolMonitor(cfg *config.Config, client EthClient, logger *zap.Logger) (*MempoolMonitor, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
+// NewMempoolMonitor creates a new mempool monitor
+func NewMempoolMonitor(cfg *config.Config, client *ethclient.Client, logger *zap.Logger) (*MempoolMonitor, error) {
 	// Create memory-mapped transaction pool
-	txPool, err := NewMMapPool("/tmp/mevbot_mempool.mmap")
+	txPool, err := NewMMapPool(cfg.MempoolConfig.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create mmap pool: %w", err)
 	}
 
-	// Create CPU-pinned worker pool
+	// Create worker pool for parallel processing
 	workers := NewAffinityWorkerPool(&WorkerConfig{
-		Workers:   runtime.NumCPU(),  // Use all available CPUs
-		QueueSize: 10000,            // Large queue for burst handling
+		NumWorkers: runtime.NumCPU(),
+		QueueSize: 10000, // Large queue for burst handling
 	})
-
-	// Create eBPF monitor
-	ebpfMon, err := ebpf.NewSyscallMonitor(logger)
-	if err != nil {
-		txPool.Close()
-		return nil, fmt.Errorf("failed to create eBPF monitor: %w", err)
-	}
 
 	// Create DPDK network manager
 	netManager, err := dpdk.NewDPDKManager(logger, &dpdk.Config{
 		Interface:    "eth0",  // Main network interface
-		NumRxQueues: 4,       // Use 4 RX queues
-		NumTxQueues: 4,       // Use 4 TX queues
-		PollTimeout: time.Microsecond * 100,
+		NumRxQueues: 4,       // Number of RX queues
+		NumTxQueues: 4,       // Number of TX queues
 	})
 	if err != nil {
 		txPool.Close()
-		ebpfMon.Stop()
 		return nil, fmt.Errorf("failed to create DPDK manager: %w", err)
 	}
 
-	monitor := &MempoolMonitor{
+	// Create LRU cache for transaction deduplication
+	cache, err := lru.New(10000)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cache: %w", err)
+	}
+
+	m := &MempoolMonitor{
 		cfg:        cfg,
 		client:     client,
 		logger:     logger,
-		ctx:        ctx,
-		cancel:     cancel,
 		txChan:     make(chan *Transaction, 10000),
 		txPool:     txPool,
 		workers:    workers,
-		ebpfMon:    ebpfMon,
 		netManager: netManager,
 		limiter:    rate.NewLimiter(rate.Limit(cfg.RateLimit), cfg.RateBurst),
 		breaker:    NewCircuitBreaker(cfg.CircuitBreaker, logger),
+		cache:      cache,
 	}
 
-	// Initialize metrics
-	monitor.initMetrics()
-
-	return monitor, nil
+	m.initMetrics()
+	return m, nil
 }
 
+// Start starts the mempool monitor
 func (m *MempoolMonitor) Start(ctx context.Context) chan *Transaction {
-	m.wg.Add(1)
-	// Start CPU-pinned worker pool
-	if err := m.workers.Start(); err != nil {
-		m.logger.Error("Failed to start worker pool", zap.Error(err))
-		return nil
-	}
+	m.ctx, m.cancel = context.WithCancel(ctx)
 
-	// Start eBPF monitoring
-	if err := m.ebpfMon.Start(ctx); err != nil {
-		m.logger.Error("Failed to start eBPF monitor", zap.Error(err))
-		m.workers.Stop()
+	// Start worker pool
+	if err := m.workers.Start(ctx); err != nil {
+		m.logger.Error("Failed to start worker pool", zap.Error(err))
 		return nil
 	}
 
@@ -162,57 +115,159 @@ func (m *MempoolMonitor) Start(ctx context.Context) chan *Transaction {
 	if err := m.netManager.Start(ctx); err != nil {
 		m.logger.Error("Failed to start DPDK manager", zap.Error(err))
 		m.workers.Stop()
-		m.ebpfMon.Stop()
 		return nil
 	}
 
+	// Start monitoring loops
+	m.wg.Add(2)
 	go m.monitorLoop(ctx)
 	go m.collectSystemMetrics(ctx)
+
 	return m.txChan
+}
+
+// Shutdown gracefully shuts down the mempool monitor
+func (m *MempoolMonitor) Shutdown() error {
+	if m.cancel != nil {
+		m.cancel()
+	}
+
+	m.wg.Wait()
+
+	// Stop worker pool
+	if err := m.workers.Stop(); err != nil {
+		m.logger.Error("Failed to stop worker pool", zap.Error(err))
+	}
+
+	// Stop DPDK manager
+	if err := m.netManager.Stop(); err != nil {
+		m.logger.Error("Failed to stop DPDK manager", zap.Error(err))
+	}
+
+	// Close transaction pool
+	if err := m.txPool.Close(); err != nil {
+		m.logger.Error("Failed to close transaction pool", zap.Error(err))
+	}
+
+	return nil
 }
 
 func (m *MempoolMonitor) monitorLoop(ctx context.Context) {
 	defer m.wg.Done()
 
-	// Subscribe to pending transactions
-	pendingTxHashes := make(chan common.Hash, 1024)
-	sub, err := m.client.SubscribePendingTransactions(ctx, pendingTxHashes)
-	if err != nil {
-		m.logger.Error("Failed to subscribe to pending transactions", zap.Error(err))
-		return
-	}
-	defer sub.Unsubscribe()
+	const (
+		maxRetries    = 3
+		retryInterval = 5 * time.Second
+		batchSize     = 100
+		batchTimeout  = 50 * time.Millisecond
+	)
 
-	// Process pending transactions
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case err := <-sub.Err():
-			m.logger.Error("Subscription error", zap.Error(err))
-			m.breaker.RecordError(err)
-			return
-		case hash := <-pendingTxHashes:
-			// Fetch full transaction
-			tx, _, err := m.client.TransactionByHash(ctx, hash)
-			if err != nil {
-				m.logger.Error("Failed to get transaction", zap.Error(err))
+	for retries := 0; retries < maxRetries; retries++ {
+		// Subscribe to pending transactions
+		pendingTxHashes := make(chan common.Hash, 1024)
+		sub, err := m.client.SubscribePendingTransactions(ctx, pendingTxHashes)
+		if err != nil {
+			m.logger.Error("Failed to subscribe to pending transactions",
+				zap.Error(err),
+				zap.Int("retry", retries+1),
+			)
+			m.metrics.errorCount.Inc()
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(retryInterval):
 				continue
 			}
+		}
+		defer sub.Unsubscribe()
 
-			// Process transaction
-			transaction := &Transaction{
-				Transaction: tx,
-				FirstSeen:  time.Now(),
-				GasPrice:   tx.GasPrice(),
-				Priority:   calculatePriority(tx),
-			}
+		// Reset retry counter on successful subscription
+		retries = 0
 
-			if err := m.processPendingTx(transaction); err != nil {
-				m.logger.Error("Failed to process transaction", zap.Error(err))
+		// Create batch processor
+		batch := make([]*Transaction, 0, batchSize)
+		batchTimer := time.NewTimer(batchTimeout)
+		defer batchTimer.Stop()
+
+		// Process pending transactions
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case err := <-sub.Err():
+				m.logger.Error("Subscription error", zap.Error(err))
+				m.breaker.RecordError(err)
+				m.metrics.errorCount.Inc()
+				// Break inner loop to retry subscription
+				goto RETRY
+			case hash := <-pendingTxHashes:
+				// Fetch full transaction
+				tx, err := m.client.TransactionByHash(ctx, hash)
+				if err != nil {
+					m.logger.Error("Failed to get transaction",
+						zap.Error(err),
+						zap.String("hash", hash.Hex()),
+					)
+					m.metrics.errorCount.Inc()
+					continue
+				}
+
+				// Create transaction object
+				transaction := &Transaction{
+					Transaction: tx,
+					FirstSeen:  time.Now(),
+					GasPrice:   tx.GasPrice(),
+					Priority:   calculatePriority(tx),
+				}
+
+				// Add to batch
+				batch = append(batch, transaction)
+
+				// Process batch if full
+				if len(batch) >= batchSize {
+					m.processBatch(batch)
+					batch = make([]*Transaction, 0, batchSize)
+					batchTimer.Reset(batchTimeout)
+				}
+
+			case <-batchTimer.C:
+				// Process remaining transactions in batch
+				if len(batch) > 0 {
+					m.processBatch(batch)
+					batch = make([]*Transaction, 0, batchSize)
+				}
+				batchTimer.Reset(batchTimeout)
 			}
 		}
+	RETRY:
+		time.Sleep(retryInterval)
+		continue
 	}
+
+	m.logger.Error("Max retries exceeded for subscription")
+}
+
+func (m *MempoolMonitor) processBatch(batch []*Transaction) {
+	if len(batch) == 0 {
+		return
+	}
+
+	start := time.Now()
+	m.metrics.queueDepth.Set(float64(len(batch)))
+
+	for _, tx := range batch {
+		if err := m.processPendingTx(tx); err != nil {
+			m.logger.Error("Failed to process transaction",
+				zap.Error(err),
+				zap.String("hash", tx.Hash().Hex()),
+			)
+			m.metrics.errorCount.Inc()
+		}
+	}
+
+	m.metrics.transactionCount.WithLabelValues("processed").Add(float64(len(batch)))
+	m.metrics.txLatency.Observe(float64(time.Since(start).Milliseconds()))
 }
 
 func (m *MempoolMonitor) processPendingTx(tx *Transaction) error {
@@ -244,43 +299,22 @@ func (m *MempoolMonitor) processPendingTx(tx *Transaction) error {
 	return nil
 }
 
-func (m *MempoolMonitor) Shutdown() error {
-	m.cancel()
-	// Stop worker pool
-	if err := m.workers.Stop(); err != nil {
-		m.logger.Error("Failed to stop worker pool", zap.Error(err))
-	}
-
-	// Stop eBPF monitor
-	if err := m.ebpfMon.Stop(); err != nil {
-		m.logger.Error("Failed to stop eBPF monitor", zap.Error(err))
-	}
-
-	// Stop DPDK manager
-	if err := m.netManager.Stop(); err != nil {
-		m.logger.Error("Failed to stop DPDK manager", zap.Error(err))
-	}
-
-	// Close memory-mapped pool
-	if err := m.txPool.Close(); err != nil {
-		m.logger.Error("Failed to close mmap pool", zap.Error(err))
-	}
-
-	m.wg.Wait()
-	close(m.txChan)
-	return nil
-}
-
 func (m *MempoolMonitor) initMetrics() {
-	m.metrics.transactionCount = *prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "mempool_transactions_total",
-		Help: "Total number of transactions processed by type",
-	}, []string{"type"})
+	m.metrics.transactionCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mempool_transactions_total",
+			Help: "Total number of transactions processed by type",
+		},
+		[]string{"type"},
+	)
 
-	m.metrics.blockCount = *prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "mempool_blocks_total",
-		Help: "Total number of blocks processed",
-	}, []string{"type"})
+	m.metrics.blockCount = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "mempool_blocks_total",
+			Help: "Total number of blocks processed",
+		},
+		[]string{"type"},
+	)
 
 	m.metrics.txLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "mempool_transaction_latency_seconds",
@@ -296,7 +330,7 @@ func (m *MempoolMonitor) initMetrics() {
 	m.metrics.profitPerTx = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "mempool_profit_per_tx_wei",
 		Help:    "Histogram of profit per transaction in wei",
-		Buckets: prometheus.ExponentialBuckets(1e9, 10, 10), // Start at 1 Gwei, multiply by 10 each time
+		Buckets: prometheus.ExponentialBuckets(1e9, 2, 15), // Start at 1 Gwei
 	})
 
 	m.metrics.memoryUsage = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -309,34 +343,37 @@ func (m *MempoolMonitor) initMetrics() {
 		Help: "Current number of goroutines",
 	})
 
-	m.metrics.opportunityCount = *prometheus.NewCounterVec(
+	m.metrics.opportunityCount = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "mempool_opportunities_total",
-			Help: "Total number of opportunities by type",
+			Help: "Total number of MEV opportunities by type",
 		},
 		[]string{"type"},
 	)
 
 	m.metrics.errorCount = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "mempool_errors_total",
-		Help: "Total number of errors",
+		Help: "Total number of errors encountered",
 	})
 
 	m.metrics.queueDepth = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "mempool_queue_depth",
-		Help: "Current depth of the transaction queue",
+		Help: "Current number of transactions in processing queue",
 	})
 
-	prometheus.MustRegister(m.metrics.transactionCount)
-	prometheus.MustRegister(m.metrics.blockCount)
-	prometheus.MustRegister(m.metrics.txLatency)
-	prometheus.MustRegister(m.metrics.profitTotal)
-	prometheus.MustRegister(m.metrics.profitPerTx)
-	prometheus.MustRegister(m.metrics.memoryUsage)
-	prometheus.MustRegister(m.metrics.goroutineCount)
-	prometheus.MustRegister(m.metrics.opportunityCount)
-	prometheus.MustRegister(m.metrics.errorCount)
-	prometheus.MustRegister(m.metrics.queueDepth)
+	// Register metrics
+	prometheus.MustRegister(
+		m.metrics.transactionCount,
+		m.metrics.blockCount,
+		m.metrics.txLatency,
+		m.metrics.profitTotal,
+		m.metrics.profitPerTx,
+		m.metrics.memoryUsage,
+		m.metrics.goroutineCount,
+		m.metrics.opportunityCount,
+		m.metrics.errorCount,
+		m.metrics.queueDepth,
+	)
 }
 
 func (m *MempoolMonitor) collectSystemMetrics(ctx context.Context) {
@@ -348,18 +385,10 @@ func (m *MempoolMonitor) collectSystemMetrics(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Collect eBPF statistics
-			slowSyscalls, avgLatency, maxLatency := m.ebpfMon.GetStats()
-			
 			// Collect network statistics
 			rxPkts, txPkts, rxBytes, txBytes, rxDrops, txDrops, netLatency := m.netManager.GetStats()
 
 			m.logger.Info("System metrics",
-				// eBPF metrics
-				zap.Uint64("slow_syscalls", slowSyscalls),
-				zap.Duration("avg_syscall_latency", time.Duration(avgLatency)),
-				zap.Duration("max_syscall_latency", time.Duration(maxLatency)),
-				
 				// Network metrics
 				zap.Uint64("rx_packets", rxPkts),
 				zap.Uint64("tx_packets", txPkts),
@@ -389,7 +418,7 @@ func (m *MempoolMonitor) isRelevantTransaction(tx *Transaction) bool {
 	}
 
 	// Check gas price
-	if tx.GasPrice().Cmp(m.cfg.MaxGasPrice) > 0 {
+	if tx.GasPrice.Cmp(m.cfg.MaxGasPrice) > 0 {
 		return false
 	}
 
@@ -401,18 +430,16 @@ func (m *MempoolMonitor) isRelevantTransaction(tx *Transaction) bool {
 	return true
 }
 
-func (m *MempoolMonitor) processingWorker(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case tx := <-m.txChan:
-			if err := m.processTransaction(tx); err != nil {
-				m.logger.Error("Failed to process transaction", zap.Error(err))
-				m.breaker.RecordError(err)
-			}
-		}
-	}
+type Transaction struct {
+	*types.Transaction
+	FirstSeen time.Time
+	GasPrice  *big.Int
+	Priority  float64
+}
+
+type WorkerConfig struct {
+	NumWorkers int
+	QueueSize  int
 }
 
 type AffinityWorkerPool struct {
@@ -423,7 +450,7 @@ type AffinityWorkerPool struct {
 
 func NewAffinityWorkerPool(config *WorkerConfig) *AffinityWorkerPool {
 	return &AffinityWorkerPool{
-		workers: config.Workers,
+		workers: config.NumWorkers,
 		queue:   make(chan func(), config.QueueSize),
 	}
 }
@@ -599,27 +626,4 @@ func calculatePriority(tx *types.Transaction) float64 {
 	// Basic priority calculation based on gas price
 	// This will be enhanced with more sophisticated metrics
 	return float64(tx.GasPrice().Uint64())
-}
-
-type ebpf struct {
-	logger *zap.Logger
-}
-
-func NewSyscallMonitor(logger *zap.Logger) (*ebpf, error) {
-	return &ebpf{logger: logger}, nil
-}
-
-func (e *ebpf) Start(ctx context.Context) error {
-	// Start eBPF monitoring
-	return nil
-}
-
-func (e *ebpf) Stop() error {
-	// Stop eBPF monitoring
-	return nil
-}
-
-func (e *ebpf) GetStats() (uint64, uint64, uint64) {
-	// Get eBPF statistics
-	return 0, 0, 0
 }

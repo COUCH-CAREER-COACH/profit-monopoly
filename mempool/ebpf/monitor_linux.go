@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 package ebpf
 
 import (
@@ -19,25 +22,25 @@ import (
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target bpfel -type event -type latency mevbot mevbot.bpf.c -- -I/usr/include/bpf
 
-// SyscallMonitor monitors system calls using eBPF
-type SyscallMonitor struct {
+// LinuxMonitor implements SyscallMonitor for Linux systems using eBPF
+type LinuxMonitor struct {
 	logger *zap.Logger
-	objs   mevbotObjects
-	rb     *ringbuf.Reader
-	
-	// Statistics
-	slowSyscalls   atomic.Uint64
-	totalLatencyNs atomic.Uint64
-	maxLatencyNs   atomic.Uint64
-
-	// Cleanup
-	links []link.Link
 	wg    sync.WaitGroup
 	done  chan struct{}
+
+	// Statistics
+	slowSyscalls   uint64
+	totalLatencyNs uint64
+	maxLatencyNs   uint64
+
+	// eBPF resources
+	objs  mevbotObjects
+	rb    *ringbuf.Reader
+	links []link.Link
 }
 
-// NewSyscallMonitor creates a new eBPF-based syscall monitor
-func NewSyscallMonitor(logger *zap.Logger) (*SyscallMonitor, error) {
+// NewSyscallMonitor creates a new eBPF-based syscall monitor for Linux
+func NewSyscallMonitor(logger *zap.Logger) (SyscallMonitor, error) {
 	// Allow the current process to lock memory for eBPF resources
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("failed to remove memlock limit: %w", err)
@@ -56,18 +59,18 @@ func NewSyscallMonitor(logger *zap.Logger) (*SyscallMonitor, error) {
 		return nil, fmt.Errorf("failed to create ring buffer reader: %w", err)
 	}
 
-	m := &SyscallMonitor{
+	m := &LinuxMonitor{
 		logger: logger,
+		done:   make(chan struct{}),
 		objs:   objs,
 		rb:     rb,
-		done:   make(chan struct{}),
 	}
 
 	return m, nil
 }
 
 // Start attaches the eBPF programs and starts monitoring
-func (m *SyscallMonitor) Start(ctx context.Context) error {
+func (m *LinuxMonitor) Start(ctx context.Context) error {
 	// Attach tracepoints
 	enterLink, err := link.Tracepoint("raw_syscalls", "sys_enter", m.objs.TraceEnter, nil)
 	if err != nil {
@@ -103,7 +106,7 @@ func (m *SyscallMonitor) Start(ctx context.Context) error {
 }
 
 // Stop detaches the eBPF programs and stops monitoring
-func (m *SyscallMonitor) Stop() error {
+func (m *LinuxMonitor) Stop() error {
 	close(m.done)
 	
 	// Close all links
@@ -124,7 +127,7 @@ func (m *SyscallMonitor) Stop() error {
 }
 
 // processEvents reads and processes events from the ring buffer
-func (m *SyscallMonitor) processEvents(ctx context.Context) {
+func (m *LinuxMonitor) processEvents(ctx context.Context) {
 	defer m.wg.Done()
 
 	for {
@@ -151,16 +154,16 @@ func (m *SyscallMonitor) processEvents(ctx context.Context) {
 			}
 
 			// Update statistics
-			m.slowSyscalls.Add(1)
-			m.totalLatencyNs.Add(event.DurationNs)
+			atomic.AddUint64(&m.slowSyscalls, 1)
+			atomic.AddUint64(&m.totalLatencyNs, event.DurationNs)
 			
 			// Update max latency if needed
 			for {
-				current := m.maxLatencyNs.Load()
+				current := atomic.LoadUint64(&m.maxLatencyNs)
 				if event.DurationNs <= current {
 					break
 				}
-				if m.maxLatencyNs.CompareAndSwap(current, event.DurationNs) {
+				if atomic.CompareAndSwapUint64(&m.maxLatencyNs, current, event.DurationNs) {
 					break
 				}
 			}
@@ -178,7 +181,7 @@ func (m *SyscallMonitor) processEvents(ctx context.Context) {
 }
 
 // collectStats periodically collects and logs statistics
-func (m *SyscallMonitor) collectStats(ctx context.Context) {
+func (m *LinuxMonitor) collectStats(ctx context.Context) {
 	defer m.wg.Done()
 
 	ticker := time.NewTicker(time.Minute)
@@ -191,13 +194,13 @@ func (m *SyscallMonitor) collectStats(ctx context.Context) {
 		case <-m.done:
 			return
 		case <-ticker.C:
-			count := m.slowSyscalls.Load()
+			count := atomic.LoadUint64(&m.slowSyscalls)
 			if count == 0 {
 				continue
 			}
 
-			total := m.totalLatencyNs.Load()
-			max := m.maxLatencyNs.Load()
+			total := atomic.LoadUint64(&m.totalLatencyNs)
+			max := atomic.LoadUint64(&m.maxLatencyNs)
 			avg := total / count
 
 			m.logger.Info("Syscall statistics",
@@ -210,12 +213,12 @@ func (m *SyscallMonitor) collectStats(ctx context.Context) {
 }
 
 // GetStats returns the current monitoring statistics
-func (m *SyscallMonitor) GetStats() (slowSyscalls uint64, avgLatencyNs uint64, maxLatencyNs uint64) {
-	count := m.slowSyscalls.Load()
+func (m *LinuxMonitor) GetStats() (slowSyscalls uint64, avgLatencyNs uint64, maxLatencyNs uint64) {
+	count := atomic.LoadUint64(&m.slowSyscalls)
 	if count == 0 {
 		return 0, 0, 0
 	}
 
-	total := m.totalLatencyNs.Load()
-	return count, total / count, m.maxLatencyNs.Load()
+	total := atomic.LoadUint64(&m.totalLatencyNs)
+	return count, total / count, atomic.LoadUint64(&m.maxLatencyNs)
 }

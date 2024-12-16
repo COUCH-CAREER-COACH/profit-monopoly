@@ -29,23 +29,23 @@ func (m *mockProvider) GetLoanFee(token common.Address, amount *big.Int) (*big.I
 	return m.loanFee, nil
 }
 
-func (m *mockProvider) ExecuteFlashLoan(ctx context.Context, params *FlashLoanParams) (*types.Transaction, error) {
-	m.executed = true
+func (m *mockProvider) ExecuteFlashLoan(ctx context.Context, params FlashLoanParams) (*types.Transaction, error) {
 	if m.shouldError {
-		return nil, errors.New("mock error")
+		return nil, assert.AnError
 	}
-	return types.NewTransaction(0, common.Address{}, big.NewInt(0), 0, big.NewInt(0), nil), nil
+	m.executed = true
+	return &types.Transaction{}, nil
 }
 
-func (m *mockProvider) ValidateRepayment(params *FlashLoanParams) error {
+func (m *mockProvider) ValidateRepayment(params FlashLoanParams) error {
 	if m.shouldError {
-		return errors.New("mock error")
+		return assert.AnError
 	}
 	return nil
 }
 
 func (m *mockProvider) GetPoolLiquidity(token common.Address) (*big.Int, error) {
-	return big.NewInt(1000000000000000000), nil
+	return m.maxLoanAmount, nil
 }
 
 func TestFlashLoanManager(t *testing.T) {
@@ -102,7 +102,7 @@ func TestFlashLoanManager(t *testing.T) {
 		}
 
 		// Test successful execution
-		tx, err := manager.ExecuteFlashLoan(context.Background(), params)
+		tx, err := manager.ExecuteFlashLoan(context.Background(), *params)
 		require.NoError(t, err)
 		require.NotNil(t, tx)
 
@@ -112,7 +112,7 @@ func TestFlashLoanManager(t *testing.T) {
 				mp.shouldError = true
 			}
 		}
-		_, err = manager.ExecuteFlashLoan(context.Background(), params)
+		_, err = manager.ExecuteFlashLoan(context.Background(), *params)
 		require.Error(t, err)
 	})
 
@@ -133,7 +133,7 @@ func TestFlashLoanManager(t *testing.T) {
 				mp.shouldError = false
 			}
 		}
-		err := manager.ValidateFlashLoan(params)
+		err := manager.ValidateFlashLoan(*params)
 		require.NoError(t, err)
 
 		// Test failed validation
@@ -142,7 +142,7 @@ func TestFlashLoanManager(t *testing.T) {
 				mp.shouldError = true
 			}
 		}
-		err = manager.ValidateFlashLoan(params)
+		err = manager.ValidateFlashLoan(*params)
 		require.Error(t, err)
 	})
 }
@@ -151,22 +151,16 @@ func BenchmarkFlashLoanManager(b *testing.B) {
 	logger := zaptest.NewLogger(b)
 	manager := NewFlashLoanManager(logger)
 
+	token := common.HexToAddress("0x6B175474E89094C44Da98b954EedeAC495271d0F") // DAI
+	amount := big.NewInt(1000000000000000000) // 1 DAI
+
 	provider := &mockProvider{
-		maxLoanAmount: big.NewInt(100000000000000000000),
-		loanFee:       big.NewInt(1000000000000000),
+		maxLoanAmount: big.NewInt(1000000000000000000),
+		loanFee:       big.NewInt(0),
 	}
-	manager.RegisterProvider(ProviderAave, provider)
+	manager.AddProvider(provider)
 
-	token := common.HexToAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
-	amount := big.NewInt(10000000000000000000)
-
-	b.Run("GetBestLoanRate", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			manager.GetBestLoanRate(token, amount)
-		}
-	})
-
-	params := &FlashLoanParams{
+	params := FlashLoanParams{
 		Token:         token,
 		Amount:        amount,
 		Target:        common.HexToAddress("0x1234"),

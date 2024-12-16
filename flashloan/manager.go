@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -206,11 +205,4 @@ func (m *FlashLoanManager) updateSuccessRate() {
 	if totalCount > 0 {
 		m.metrics.successRate.Set(successCount / totalCount)
 	}
-}
-
-type Provider interface {
-	ExecuteFlashLoan(ctx context.Context, params FlashLoanParams) (*types.Transaction, error)
-	GetFlashLoanFee(ctx context.Context, token common.Address) (*big.Int, error)
-	GetLiquidity(ctx context.Context, token common.Address) (*big.Int, error)
-	String() string
 }

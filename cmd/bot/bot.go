@@ -3,47 +3,86 @@ package bot
 import (
 	"context"
 	"fmt"
-	"github.com/michaelpento.lv/mevbot/config"
-	"github.com/michaelpento.lv/mevbot/flashloan"
-	"github.com/michaelpento.lv/mevbot/mempool"
+	"math/big"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
+
+	"github.com/michaelpento.lv/mevbot/config"
+	"github.com/michaelpento.lv/mevbot/mempool"
 )
+
+// OpportunityType represents different types of MEV opportunities
+type OpportunityType int
+
+const (
+	// OpportunityArbitrage represents arbitrage opportunities
+	OpportunityArbitrage OpportunityType = iota
+	// OpportunityLiquidation represents liquidation opportunities
+	OpportunityLiquidation
+	// OpportunitySandwich represents sandwich trading opportunities
+	OpportunitySandwich
+)
+
+// Opportunity represents an MEV opportunity
+type Opportunity struct {
+	Type    OpportunityType
+	Tx      *types.Transaction
+	Profit  *big.Int
+	GasCost *big.Int
+	Target  common.Address
+}
 
 // Bot represents the MEV bot instance
 type Bot struct {
 	cfg            *config.Config
-	mempoolMonitor *mempool.Monitor
+	mempoolMonitor *mempool.MempoolMonitor
 	analyzer       *mempool.Analyzer
-	flashManager   *flashloan.Manager
 	logger         *zap.Logger
 	wg             sync.WaitGroup
+	opportunities  chan *mempool.Opportunity
 }
 
 // New creates a new MEV bot instance
 func New(cfg *config.Config, logger *zap.Logger) (*Bot, error) {
+	// Create Ethereum client
+	client, err := ethclient.Dial(cfg.Network.RPCEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Ethereum node: %w", err)
+	}
+
 	// Create mempool monitor
-	monitor, err := mempool.NewMonitor(cfg, logger)
+	monitor, err := mempool.NewMempoolMonitor(cfg, client, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create mempool monitor: %w", err)
 	}
 
-	// Create transaction analyzer
-	analyzer := mempool.NewAnalyzer(monitor, logger, cfg.Workers)
+	// Create analyzer config
+	analyzerCfg := mempool.Config{
+		Network: struct {
+			HTTPEndpoint string
+			WSEndpoint   string
+		}{
+			HTTPEndpoint: cfg.Network.RPCEndpoint,
+			WSEndpoint:   cfg.Network.WSEndpoint,
+		},
+	}
 
-	// Create flash loan manager
-	flashManager, err := flashloan.NewManager(cfg, logger)
+	// Create transaction analyzer
+	analyzer, err := mempool.NewAnalyzer(analyzerCfg, logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create flash loan manager: %w", err)
+		return nil, fmt.Errorf("failed to create analyzer: %w", err)
 	}
 
 	return &Bot{
 		cfg:            cfg,
 		mempoolMonitor: monitor,
 		analyzer:       analyzer,
-		flashManager:   flashManager,
 		logger:         logger,
+		opportunities:  make(chan *mempool.Opportunity, 100),
 	}, nil
 }
 
@@ -55,8 +94,19 @@ func (b *Bot) Start(ctx context.Context) error {
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
-		if err := b.mempoolMonitor.Start(ctx); err != nil {
-			b.logger.Error("Mempool monitor error", zap.Error(err))
+		txChan := b.mempoolMonitor.Start(ctx)
+		for tx := range txChan {
+			// Analyze transaction for opportunities
+			opportunities := b.analyzer.AnalyzeTransaction(ctx, tx)
+
+			// Send opportunities to processing channel
+			for _, opp := range opportunities {
+				select {
+				case <-ctx.Done():
+					return
+				case b.opportunities <- opp:
+				}
+			}
 		}
 	}()
 
@@ -73,23 +123,24 @@ func (b *Bot) Start(ctx context.Context) error {
 // Stop stops the MEV bot
 func (b *Bot) Stop() {
 	b.logger.Info("Stopping MEV bot...")
+	close(b.opportunities)
 	b.wg.Wait()
 }
 
 // processOpportunities processes MEV opportunities
 func (b *Bot) processOpportunities(ctx context.Context) {
-	// Start the analyzer
-	opportunities := b.analyzer.Start(ctx)
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case opp := <-opportunities:
+		case opp, ok := <-b.opportunities:
+			if !ok {
+				return
+			}
 			if err := b.executeOpportunity(ctx, opp); err != nil {
 				b.logger.Error("Failed to execute opportunity",
 					zap.Error(err),
-					zap.String("tx_hash", opp.Tx.Hash().Hex()),
+					zap.Int("type", int(opp.Type)),
 					zap.String("profit", opp.Profit.String()))
 			}
 		}
@@ -101,9 +152,9 @@ func (b *Bot) executeOpportunity(ctx context.Context, opp *mempool.Opportunity) 
 	// Log opportunity details
 	b.logger.Info("Executing opportunity",
 		zap.Int("type", int(opp.Type)),
-		zap.String("tx_hash", opp.Tx.Hash().Hex()),
 		zap.String("profit", opp.Profit.String()),
-		zap.String("gas_cost", opp.GasCost.String()))
+		zap.String("gas_cost", opp.GasCost.String()),
+		zap.Float64("priority", opp.Priority))
 
 	// TODO: Implement opportunity execution
 	// This will be expanded in Phase 3 with actual execution logic

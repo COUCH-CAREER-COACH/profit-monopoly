@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,11 +12,63 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
+
+// AaveV2 ABI for flash loan operations
+const aaveV2ABI = `[
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "receiverAddress",
+				"type": "address"
+			},
+			{
+				"internalType": "address[]",
+				"name": "assets",
+				"type": "address[]"
+			},
+			{
+				"internalType": "uint256[]",
+				"name": "amounts",
+				"type": "uint256[]"
+			},
+			{
+				"internalType": "bytes",
+				"name": "params",
+				"type": "bytes"
+			}
+		],
+		"name": "flashLoan",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "asset",
+				"type": "address"
+			}
+		],
+		"name": "getReserveData",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "availableLiquidity",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	}
+]`
 
 // AaveProvider implements the flash loan Provider interface for Aave
 type AaveProvider struct {
@@ -46,10 +99,17 @@ func NewAaveProvider(client *ethclient.Client, config *flashloan.ProviderConfig,
 		return nil, fmt.Errorf("logger cannot be nil")
 	}
 
+	// Parse ABI
+	parsedABI, err := abi.JSON(strings.NewReader(aaveV2ABI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ABI: %w", err)
+	}
+
 	provider := &AaveProvider{
 		client: client,
 		config: config,
 		logger: logger,
+		abi:    parsedABI,
 	}
 
 	// Initialize metrics
@@ -210,7 +270,7 @@ func (p *AaveProvider) GetPoolLiquidity(token common.Address) (*big.Int, error) 
 		return nil, fmt.Errorf("failed to pack getReserveData: %w", err)
 	}
 
-	result, err := p.client.CallContract(context.Background(), ethereum.CallMsg{
+	result, err := p.client.CallContract(context.Background(), core.CallMsg{
 		To:   &p.config.ContractAddress,
 		Data: callData,
 	}, nil)

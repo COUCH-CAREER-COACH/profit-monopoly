@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/michaelpento.lv/mevbot/dex"
 
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -25,17 +27,24 @@ type UniswapV2 struct {
 	factory    common.Address
 	router     common.Address
 	initCode   []byte
-	pairs      map[common.Address]*IUniswapV2Pair
+	pairs      map[common.Address]*UniswapV2Pair
+	pairABI    abi.ABI
 }
 
 // NewUniswapV2 creates a new Uniswap V2 exchange
 func NewUniswapV2(client *ethclient.Client) (*UniswapV2, error) {
+	parsedABI, err := abi.JSON(strings.NewReader(pairABIJson))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse pair ABI: %w", err)
+	}
+
 	return &UniswapV2{
 		client:     client,
 		factory:    MainnetFactory,
 		router:     MainnetRouter,
 		initCode:   common.FromHex("0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f"),
-		pairs:      make(map[common.Address]*IUniswapV2Pair),
+		pairs:      make(map[common.Address]*UniswapV2Pair),
+		pairABI:    parsedABI,
 	}, nil
 }
 
@@ -76,15 +85,15 @@ func (u *UniswapV2) GetReserves(ctx context.Context, token0, token1 common.Addre
 		return nil, err
 	}
 
-	reserves, err := pair.GetReserves(&bind.CallOpts{Context: ctx})
+	reserve0, reserve1, err := pair.GetReserves()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get reserves: %w", err)
 	}
 
 	return &dex.Reserves{
-		Reserve0:    reserves.Reserve0,
-		Reserve1:    reserves.Reserve1,
-		BlockNumber: reserves.BlockTimestampLast,
+		Reserve0:    reserve0,
+		Reserve1:    reserve1,
+		BlockNumber: 0, // We don't need block timestamp for our purposes
 	}, nil
 }
 
@@ -133,13 +142,13 @@ func (u *UniswapV2) GetAmountIn(ctx context.Context, amountOut *big.Int, path []
 }
 
 // getPair returns the pair contract for two tokens
-func (u *UniswapV2) getPair(ctx context.Context, token0, token1 common.Address) (*IUniswapV2Pair, error) {
+func (u *UniswapV2) getPair(ctx context.Context, token0, token1 common.Address) (*UniswapV2Pair, error) {
 	pairAddr := u.pairFor(token0, token1)
 	if pair, ok := u.pairs[pairAddr]; ok {
 		return pair, nil
 	}
 
-	pair, err := NewIUniswapV2Pair(pairAddr, u.client)
+	pair, err := NewUniswapV2Pair(pairAddr, u.client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pair contract: %w", err)
 	}
@@ -154,11 +163,10 @@ func (u *UniswapV2) pairFor(token0, token1 common.Address) common.Address {
 		token0, token1 = token1, token0
 	}
 
-	return common.BytesToAddress(
-		common.Keccak256([]byte{
-			0xff,
-		}, u.factory.Bytes(), common.Keccak256(token0.Bytes(), token1.Bytes()), u.initCode),
-	)
+	salt := crypto.Keccak256(token0.Bytes(), token1.Bytes())
+	return common.BytesToAddress(crypto.Keccak256([]byte{
+		0xff,
+	}, u.factory.Bytes(), salt, u.initCode))
 }
 
 // getAmountOut calculates output amount for an input amount

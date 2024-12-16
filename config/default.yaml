@@ -1,0 +1,79 @@
+# Network Configuration
+network:
+  chain_id: 1  # Mainnet
+  rpc_url: ${HTTPS_URL_MAINNET}
+  ws_url: ${WSS_URL_MAINNET}
+  flashbots_relay_url: "https://relay.flashbots.net"
+
+# Account Configuration
+account:
+  private_key: ${PRIVATE_KEY}
+
+# Strategy Configuration
+strategy:
+  min_profit: 0.1  # ETH
+  max_gas_price: 200  # GWEI
+  max_slippage: 0.005  # 0.5%
+  min_success_probability: 0.8
+  enable_simd: true
+  parallel_processing: true
+
+# Flash Loan Configuration
+flash_loan:
+  providers:
+    aave:
+      enabled: true
+      lending_pool: "0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9"
+      fee_percentage: 0.0009
+    dydx:
+      enabled: true
+      solo: "0x1E0447b19BB6EcFdAe1e4AE1694b0C3659614e4e"
+      fee_percentage: 0
+    balancer:
+      enabled: true
+      vault: "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+      fee_percentage: 0.0001
+
+# Flashbots Configuration
+flashbots:
+  min_bid: 0.05  # ETH
+  max_bid: 2.0   # ETH
+  blocks_to_try: 3
+  enable_ml_bidding: true
+  reputation_threshold: 0.7
+
+# Mempool Configuration
+mempool:
+  max_pending_tx: 1000
+  enable_custom_indexing: true
+  cleanup_interval: 60  # seconds
+  max_parallel_analysis: 4
+
+# Monitoring Configuration
+monitoring:
+  log_level: "INFO"
+  enable_metrics: true
+  metrics_port: 9090
+  alert_webhook: ${ALERT_WEBHOOK}
+  min_balance_alert: 1.0  # ETH
+
+# Performance Optimization
+performance:
+  use_huge_pages: true
+  cpu_pinning: true
+  network_optimization: true
+  memory_mapped_files: true
+
+# Circuit Breakers
+circuit_breakers:
+  max_consecutive_failures: 3
+  max_daily_loss: 5.0  # ETH
+  max_gas_used_per_block: 1000000
+  min_health_score: 0.7
+
+# Security
+security:
+  rate_limit_calls: 3  # per block
+  max_exposure: 10.0  # ETH
+  require_simulation: true
+  whitelist_tokens: true

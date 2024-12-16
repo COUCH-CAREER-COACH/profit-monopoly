@@ -1,8 +1,11 @@
 package uniswap
 
 import (
+	"fmt"
 	"math/big"
+	"strings"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -13,50 +16,108 @@ type UniswapV2Pair struct {
 	contract *bind.BoundContract
 	address  common.Address
 	client   *ethclient.Client
+	pairABI  abi.ABI
 }
+
+// Pair contract ABI
+const pairABIJson = `[{
+	"constant": true,
+	"inputs": [],
+	"name": "getReserves",
+	"outputs": [
+		{"name": "reserve0", "type": "uint112"},
+		{"name": "reserve1", "type": "uint112"},
+		{"name": "blockTimestampLast", "type": "uint32"}
+	],
+	"payable": false,
+	"stateMutability": "view",
+	"type": "function"
+}, {
+	"constant": true,
+	"inputs": [],
+	"name": "token0",
+	"outputs": [{"name": "", "type": "address"}],
+	"payable": false,
+	"stateMutability": "view",
+	"type": "function"
+}, {
+	"constant": true,
+	"inputs": [],
+	"name": "token1",
+	"outputs": [{"name": "", "type": "address"}],
+	"payable": false,
+	"stateMutability": "view",
+	"type": "function"
+}]`
 
 // NewUniswapV2Pair creates a new UniswapV2Pair instance
 func NewUniswapV2Pair(address common.Address, client *ethclient.Client) (*UniswapV2Pair, error) {
-	contract, err := bind.NewBoundContract(address, PairABI, client, client, client)
+	parsedABI, err := abi.JSON(strings.NewReader(pairABIJson))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse pair ABI: %w", err)
 	}
+
+	contract := bind.NewBoundContract(address, parsedABI, client, client, client)
 
 	return &UniswapV2Pair{
 		contract: contract,
 		address:  address,
 		client:   client,
+		pairABI:  parsedABI,
 	}, nil
 }
 
 // GetReserves returns the current reserves of the pair
 func (p *UniswapV2Pair) GetReserves() (reserve0 *big.Int, reserve1 *big.Int, err error) {
-	var result struct {
-		Reserve0           *big.Int
-		Reserve1           *big.Int
-		BlockTimestampLast uint32
-	}
-
-	err = p.contract.Call(nil, &result, "getReserves")
+	var out []interface{}
+	err = p.contract.Call(&bind.CallOpts{}, &out, "getReserves")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to get reserves: %w", err)
 	}
 
-	return result.Reserve0, result.Reserve1, nil
+	// Parse results
+	reserve0, ok := out[0].(*big.Int)
+	if !ok {
+		return nil, nil, fmt.Errorf("failed to parse reserve0")
+	}
+	reserve1, ok := out[1].(*big.Int)
+	if !ok {
+		return nil, nil, fmt.Errorf("failed to parse reserve1")
+	}
+
+	return reserve0, reserve1, nil
 }
 
 // Token0 returns the address of token0
 func (p *UniswapV2Pair) Token0() (common.Address, error) {
-	var result common.Address
-	err := p.contract.Call(nil, &result, "token0")
-	return result, err
+	var out []interface{}
+	err := p.contract.Call(&bind.CallOpts{}, &out, "token0")
+	if err != nil {
+		return common.Address{}, fmt.Errorf("failed to get token0: %w", err)
+	}
+
+	addr, ok := out[0].(common.Address)
+	if !ok {
+		return common.Address{}, fmt.Errorf("failed to parse token0 address")
+	}
+
+	return addr, nil
 }
 
 // Token1 returns the address of token1
 func (p *UniswapV2Pair) Token1() (common.Address, error) {
-	var result common.Address
-	err := p.contract.Call(nil, &result, "token1")
-	return result, err
+	var out []interface{}
+	err := p.contract.Call(&bind.CallOpts{}, &out, "token1")
+	if err != nil {
+		return common.Address{}, fmt.Errorf("failed to get token1: %w", err)
+	}
+
+	addr, ok := out[0].(common.Address)
+	if !ok {
+		return common.Address{}, fmt.Errorf("failed to parse token1 address")
+	}
+
+	return addr, nil
 }
 
 // GetAmountOut calculates the output amount for a given input amount

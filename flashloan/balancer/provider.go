@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"github.com/michaelpento.lv/mevbot/flashloan"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -13,6 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
+
+	"github.com/michaelpento.lv/mevbot/flashloan"
 )
 
 const (
@@ -30,10 +31,7 @@ type Provider struct {
 // NewProvider creates a new Balancer flash loan provider
 func NewProvider(client *ethclient.Client, logger *zap.Logger) (*Provider, error) {
 	vaultAddr := common.HexToAddress(VaultAddress)
-	vault, err := bind.NewBoundContract(vaultAddr, vaultABI, client, client, client)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create vault contract: %w", err)
-	}
+	vault := bind.NewBoundContract(vaultAddr, vaultABI, client, client, client)
 
 	return &Provider{
 		client: client,
@@ -49,7 +47,7 @@ func (p *Provider) ExecuteFlashLoan(ctx context.Context, params flashloan.FlashL
 		zap.String("amount", params.Amount.String()))
 
 	// Pack flash loan data
-	data, err := p.packFlashLoanData(params)
+	userData, err := p.packFlashLoanData(params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pack flash loan data: %w", err)
 	}
@@ -69,7 +67,7 @@ func (p *Provider) ExecuteFlashLoan(ctx context.Context, params flashloan.FlashL
 	auth.GasLimit = uint64(1000000) // Set appropriate gas limit
 
 	// Execute flash loan
-	tx, err := p.vault.Transact(auth, "flashLoan", params.Token, params.Amount, params.Data)
+	tx, err := p.vault.Transact(auth, "flashLoan", params.Target, params.Token, params.Amount, userData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute flash loan: %w", err)
 	}
@@ -89,19 +87,28 @@ func (p *Provider) GetFlashLoanFee(ctx context.Context, token common.Address) (*
 
 // GetLiquidity returns the available liquidity for a token in Balancer
 func (p *Provider) GetLiquidity(ctx context.Context, token common.Address) (*big.Int, error) {
-	var result struct {
-		Cash      *big.Int
-		Borrowed  *big.Int
-		Reserved  *big.Int
-	}
-
-	err := p.vault.Call(&bind.CallOpts{Context: ctx}, &result, "getPoolTokenInfo", token)
+	var out []interface{}
+	err := p.vault.Call(&bind.CallOpts{Context: ctx}, &out, "getPoolTokenInfo", token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token info: %w", err)
 	}
 
+	if len(out) != 3 {
+		return nil, fmt.Errorf("unexpected number of return values: got %d, want 3", len(out))
+	}
+
+	cash, ok := out[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected type for cash: got %T, want *big.Int", out[0])
+	}
+
+	reserved, ok := out[2].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected type for reserved: got %T, want *big.Int", out[2])
+	}
+
 	// Available liquidity is cash minus reserved
-	liquidity := new(big.Int).Sub(result.Cash, result.Reserved)
+	liquidity := new(big.Int).Sub(cash, reserved)
 	if liquidity.Sign() < 0 {
 		liquidity = big.NewInt(0)
 	}

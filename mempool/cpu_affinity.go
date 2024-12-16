@@ -5,65 +5,51 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-
-	"golang.org/x/sys/unix"
+	"time"
 )
 
 // CPUSet represents a set of CPU cores
 type CPUSet struct {
-	mask unix.CPUSet
-	mu   sync.Mutex
+	mu sync.Mutex
 }
 
 // NewCPUSet creates a new CPU set
 func NewCPUSet() *CPUSet {
-	var set CPUSet
-	unix.SchedGetaffinity(0, &set.mask)
-	return &set
+	return &CPUSet{}
 }
 
 // Pin pins the current goroutine to the specified CPU core
+// Note: CPU pinning is not supported on Darwin/macOS
 func (cs *CPUSet) Pin(cpu int) error {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-
-	var mask unix.CPUSet
-	mask.Zero()
-	mask.Set(cpu)
-
-	// Set thread affinity
-	if err := unix.SchedSetaffinity(0, &mask); err != nil {
-		return fmt.Errorf("failed to set CPU affinity: %w", err)
-	}
-
+	// CPU pinning not supported on Darwin
 	return nil
 }
 
-// AffinityWorkerPool is a worker pool with CPU affinity
-type AffinityWorkerPool struct {
+// AffinityWorkerPool2 is a worker pool with CPU affinity
+type AffinityWorkerPool2 struct {
 	workers    int
 	queue      chan func()
 	wg         sync.WaitGroup
 	cpuSet     *CPUSet
 	startIndex atomic.Int32
 	metrics    struct {
-		taskLatency   float64
-		queueLength   int64
-		activeWorkers int32
+		taskLatency   atomic.Int64
+		queueLength   atomic.Int64
+		activeWorkers atomic.Int32
 	}
 }
 
-// NewAffinityWorkerPool creates a new worker pool with CPU affinity
-func NewAffinityWorkerPool(config *WorkerConfig) *AffinityWorkerPool {
-	return &AffinityWorkerPool{
-		workers: config.Workers,
+// NewAffinityWorkerPool2 creates a new worker pool with CPU affinity
+func NewAffinityWorkerPool2(config *WorkerConfig) *AffinityWorkerPool2 {
+	return &AffinityWorkerPool2{
+		workers: config.NumWorkers,
 		queue:   make(chan func(), config.QueueSize),
 		cpuSet:  NewCPUSet(),
 	}
 }
 
 // Start starts the worker pool
-func (p *AffinityWorkerPool) Start() error {
+func (p *AffinityWorkerPool2) Start() error {
 	// Get available CPU cores
 	numCPU := runtime.NumCPU()
 	if p.workers > numCPU {
@@ -80,20 +66,20 @@ func (p *AffinityWorkerPool) Start() error {
 }
 
 // Stop stops the worker pool
-func (p *AffinityWorkerPool) Stop() error {
+func (p *AffinityWorkerPool2) Stop() error {
 	close(p.queue)
 	p.wg.Wait()
 	return nil
 }
 
 // Submit submits a task to the worker pool
-func (p *AffinityWorkerPool) Submit(task func()) {
-	atomic.AddInt64(&p.metrics.queueLength, 1)
+func (p *AffinityWorkerPool2) Submit(task func()) {
+	p.metrics.queueLength.Add(1)
 	p.queue <- task
 }
 
 // worker is a CPU-pinned worker goroutine
-func (p *AffinityWorkerPool) worker(id int) {
+func (p *AffinityWorkerPool2) worker(id int) {
 	defer p.wg.Done()
 
 	// Pin this worker to a specific CPU core
@@ -106,45 +92,24 @@ func (p *AffinityWorkerPool) worker(id int) {
 		fmt.Printf("Failed to pin worker %d to CPU %d: %v\n", id, targetCore, err)
 	}
 
-	// Pre-allocate timer for task latency measurement
-	timer := new(timer)
-
 	for task := range p.queue {
-		atomic.AddInt32(&p.metrics.activeWorkers, 1)
-		timer.start()
+		p.metrics.activeWorkers.Add(1)
+		start := time.Now().UnixNano()
 
 		// Execute the task
 		task()
 
 		// Update metrics
-		latency := timer.elapsed()
-		atomic.StoreInt64(&p.metrics.queueLength, int64(len(p.queue)))
-		atomic.AddInt32(&p.metrics.activeWorkers, -1)
-
-		// Update average latency using exponential moving average
-		oldLatency := atomic.LoadFloat64((*float64)(&p.metrics.taskLatency))
-		newLatency := oldLatency*0.9 + float64(latency)*0.1
-		atomic.StoreFloat64((*float64)(&p.metrics.taskLatency), newLatency)
+		latency := time.Now().UnixNano() - start
+		p.metrics.queueLength.Store(int64(len(p.queue)))
+		p.metrics.taskLatency.Store(latency)
+		p.metrics.activeWorkers.Add(-1)
 	}
 }
 
-// timer is a simple timer for measuring task latency
-type timer struct {
-	start int64
-}
-
-func (t *timer) start() {
-	t.start = unix.TimevalToNsec(unix.NsecToTimeval(unix.NowNsec()))
-}
-
-func (t *timer) elapsed() int64 {
-	now := unix.TimevalToNsec(unix.NsecToTimeval(unix.NowNsec()))
-	return now - t.start
-}
-
 // GetMetrics returns the current pool metrics
-func (p *AffinityWorkerPool) GetMetrics() (queueLength int64, activeWorkers int32, avgLatencyNs float64) {
-	return atomic.LoadInt64(&p.metrics.queueLength),
-		atomic.LoadInt32(&p.metrics.activeWorkers),
-		atomic.LoadFloat64((*float64)(&p.metrics.taskLatency))
+func (p *AffinityWorkerPool2) GetMetrics() (queueLength int64, activeWorkers int32, avgLatencyNs int64) {
+	return p.metrics.queueLength.Load(),
+		p.metrics.activeWorkers.Load(),
+		p.metrics.taskLatency.Load()
 }

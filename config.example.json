@@ -1,0 +1,56 @@
+{
+    "network": {
+        "mainnet_rpc": "https://eth-mainnet.example.com",
+        "flashbots_relay": "https://relay.flashbots.net",
+        "ws_endpoints": ["wss://eth-mainnet.example.com/ws"],
+        "chain_id": 1,
+        "rpc_endpoint": "${ETHEREUM_MAINNET_RPC_URL}",
+        "ws_endpoint": "${ETHEREUM_MAINNET_WS_URL}"
+    },
+    "mempool": {
+        "max_pending_tx": 10000,
+        "block_buffer_size": 50,
+        "min_profit_threshold": "0.01",
+        "gas_boost_factor": 1.2,
+        "data_dir": "/tmp/mevbot_mempool.mmap",
+        "workers": 4
+    },
+    "flashloan": {
+        "providers": ["aave", "dydx", "balancer"],
+        "max_loan_amount": "1000",
+        "min_profit_ratio": 1.02,
+        "max_flash_loan_fee": "1000000000000000000"
+    },
+    "monitoring": {
+        "prometheus_port": 9090,
+        "health_check_port": 8080,
+        "log_level": "info"
+    },
+    "security": {
+        "max_slippage": 0.5,
+        "circuit_breaker_threshold": 10,
+        "rate_limit_per_second": 100
+    },
+    "rate_limit": 100.0,
+    "rate_burst": 10,
+    "circuit_breaker": {
+        "error_threshold": 5,
+        "reset_timeout": "5m",
+        "half_open_timeout": "1m",
+        "enabled": true
+    },
+    "pools": [
+        {
+            "address": "0x0000000000000000000000000000000000000000",
+            "token0": "0x0000000000000000000000000000000000000000",
+            "token1": "0x0000000000000000000000000000000000000000",
+            "fee": 3000,
+            "min_liquidity": "1000000000000000000"
+        }
+    ],
+    "router_address": "0x0000000000000000000000000000000000000000",
+    "sandwich_executor": "0x0000000000000000000000000000000000000000",
+    "max_gas_price": "100000000000",
+    "flashbots_key": "${FLASHBOTS_KEY}",
+    "flashbots_rpc": "https://relay.flashbots.net"
+}

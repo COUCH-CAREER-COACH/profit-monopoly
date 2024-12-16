@@ -1,0 +1,8 @@
+Metadata-Version: 2.1
+Name: mevbot
+Version: 0.1.0
+Requires-Dist: web3>=6.0.0
+Requires-Dist: numpy>=1.21.0
+Requires-Dist: pytest>=7.0.0
+Requires-Dist: pytest-asyncio>=0.20.0
+Requires-Dist: python-dotenv>=0.19.0

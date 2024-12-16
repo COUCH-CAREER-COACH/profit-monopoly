@@ -27,19 +27,16 @@ var startCmd = &cobra.Command{
 		}
 
 		// Create mempool monitor
-		ethClient, err := ethclient.Dial(cfg.RPCEndpoint)
+		ethClient, err := ethclient.Dial(cfg.Network.RPCEndpoint)
 		if err != nil {
 			log.Fatal("Failed to connect to Ethereum node", zap.Error(err))
 		}
 
-		// Wrap ethClient to implement EthClient interface
-		wrappedClient := mempool.NewEthClientWrapper(ethClient)
-
-		monitor, err := mempool.NewMempoolMonitor(cfg, wrappedClient, log)
+		monitor, err := mempool.NewMempoolMonitor(cfg, ethClient, log)
 		if err != nil {
 			log.Fatal("Failed to create mempool monitor", zap.Error(err))
 		}
-		defer monitor.Cleanup()
+		defer monitor.Shutdown() // Use Shutdown instead of Cleanup
 
 		// Initialize strategies
 		sandwichAttack, err := sandwich.NewSandwichAttack(cfg)
@@ -59,16 +56,22 @@ var startCmd = &cobra.Command{
 		txChan := monitor.Start(ctx)
 
 		// Process transactions
-		for tx := range txChan {
+		for mempoolTx := range txChan {
 			select {
 			case <-ctx.Done():
 				return
 			default:
+				// Convert mempool.Transaction to types.Transaction for strategy compatibility
+				tx := mempoolTx.Transaction
+
 				// Check for sandwich opportunities
 				if sandwichAttack.IsProfitable(tx) {
 					go func(tx *types.Transaction) {
 						if err := sandwichAttack.Execute(ctx, tx); err != nil {
-							log.Error("Failed to execute sandwich attack", zap.Error(err))
+							log.Error("Failed to execute sandwich attack", 
+								zap.Error(err),
+								zap.String("tx_hash", tx.Hash().Hex()),
+							)
 						}
 					}(tx)
 				}
@@ -77,7 +80,10 @@ var startCmd = &cobra.Command{
 				if frontrunStrategy.IsProfitable(tx) {
 					go func(tx *types.Transaction) {
 						if err := frontrunStrategy.Execute(tx); err != nil {
-							log.Error("Failed to execute frontrun strategy", zap.Error(err))
+							log.Error("Failed to execute frontrun strategy", 
+								zap.Error(err),
+								zap.String("tx_hash", tx.Hash().Hex()),
+							)
 						}
 					}(tx)
 				}

@@ -1,0 +1,14 @@
+{
+    "ethereum_rpc": "http://localhost:8545",
+    "websocket_rpc": "ws://localhost:8546",
+    "flashbots_rpc": "https://relay.flashbots.net",
+    "dev_mode": true,
+    "use_ebpf": false,
+    "use_dpdk": false,
+    "network_device": "en0",
+    "cpu_pinning": false,
+    "use_huge_pages": false,
+    "min_profit_threshold": "0.01",
+    "max_gas_price": "100",
+    "max_slippage": "1.0"
+}
