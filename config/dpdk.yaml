@@ -1,0 +1,51 @@
+dpdk:
+  # EAL configuration
+  eal:
+    cores: "0-3"         # Use cores 0-3 for DPDK
+    memory_channels: 4   # Number of memory channels
+    hugepage_dir: "/mnt/huge"
+    proc_type: "auto"
+
+  # Port configuration
+  port:
+    rx_queues: 1
+    tx_queues: 1
+    rx_ring_size: 1024
+    tx_ring_size: 1024
+    max_rx_pkt_burst: 32
+    max_tx_pkt_burst: 32
+
+  # Memory configuration
+  memory:
+    mempool_size: 8191
+    mbuf_cache_size: 250
+    mbuf_size: 2048
+    huge_page_size: 2048  # 2MB hugepages
+
+  # CPU configuration
+  cpu:
+    main_core: 0         # Core for main thread
+    rx_cores: [1]        # Cores for RX threads
+    tx_cores: [2]        # Cores for TX threads
+    worker_cores: [3]    # Cores for worker threads
+
+  # Network configuration
+  network:
+    mtu: 1500
+    rss_key_len: 40     # RSS hash key length
+    rss_queues: 1       # Number of RSS queues
+    promiscuous: true   # Enable promiscuous mode
+
+  # Performance tuning
+  performance:
+    prefetch_enable: true
+    burst_size: 32
+    ring_size: 1024
+    cache_line_size: 64
+    numa_on: true       # Enable NUMA awareness
+
+  # Monitoring
+  monitoring:
+    stats_interval: 1000  # Statistics collection interval in ms
+    metrics_enable: true  # Enable performance metrics collection
+    debug_enable: false   # Enable debug logging

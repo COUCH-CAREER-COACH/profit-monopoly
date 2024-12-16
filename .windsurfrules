@@ -1,0 +1,88 @@
+# Workspace Rules for Windsurf MEV Bot
+
+## Project Structure
+- `/cmd` - Command-line interfaces and entry points
+- `/config` - Configuration management
+- `/mempool` - Mempool monitoring and indexing
+- `/strategies` - MEV strategy implementations
+- `/flashloan` - Flash loan integrations
+- `/bundler` - Flashbots bundle management
+- `/utils` - Shared utilities and helpers
+
+## Code Organization
+- Each package should have its own tests
+- Use interfaces for modularity
+- Keep packages focused and single-purpose
+- Implement proper error handling
+- Document all public interfaces
+- Follow Go best practices and idioms
+
+## Development Guidelines
+1. Testing
+   - Write unit tests for all packages
+   - Include integration tests for critical paths
+   - Maintain test coverage above 80%
+   - Use benchmarks for performance-critical code
+
+2. Performance
+   - Profile code regularly
+   - Optimize hot paths
+   - Use buffered channels appropriately
+   - Implement proper connection pooling
+   - Monitor memory allocations
+
+3. Security
+   - Never commit private keys
+   - Use environment variables for secrets
+   - Implement proper access controls
+   - Regular security audits
+   - Follow secure coding practices
+
+4. Documentation
+   - Document all public APIs
+   - Include examples in documentation
+   - Keep README up to date
+   - Document configuration options
+   - Include architecture diagrams
+
+5. Deployment
+   - Use proper versioning
+   - Include deployment scripts
+   - Document deployment process
+   - Implement health checks
+   - Support monitoring/metrics
+
+6. Code Quality
+   - Run linters before commits
+   - Follow consistent formatting
+   - Use meaningful variable names
+   - Keep functions focused
+   - Regular code reviews
+
+## Dependencies
+- Use semantic versioning
+- Pin dependency versions
+- Regular dependency updates
+- Audit dependencies for security
+- Minimize external dependencies
+
+## Configuration Management
+- Use environment variables
+- Support multiple environments
+- Validate all configurations
+- Document all options
+- Use reasonable defaults
+
+## Monitoring & Logging
+- Structured logging
+- Error tracking
+- Performance metrics
+- System health monitoring
+- Alert configuration
+
+## Version Control
+- Meaningful commit messages
+- Feature branches
+- Pull request reviews
+- Version tagging
+- Changelog maintenance

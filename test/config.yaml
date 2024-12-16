@@ -1,0 +1,33 @@
+test:
+  # DPDK configuration
+  dpdk:
+    memory_channels: 4
+    memory_size: 1024  # MB
+    hugepage_size: 2048  # MB
+    ports:
+      - device: "0000:00:03.0"
+        rx_queues: 4
+        tx_queues: 4
+        mtu: 1500
+
+  # eBPF configuration
+  ebpf:
+    perf_buffer_pages: 64
+    maps:
+      syscall_latency:
+        type: hash
+        key_size: 8
+        value_size: 8
+        max_entries: 10000
+      network_stats:
+        type: hash
+        key_size: 8
+        value_size: 16
+        max_entries: 10000
+
+  # Test parameters
+  parameters:
+    transaction_count: 1000
+    concurrent_workers: 4
+    test_duration: 60  # seconds
+    log_level: debug

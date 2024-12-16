@@ -1,0 +1,97 @@
+{
+    "chain_id": 11155111,
+    "rpc_endpoint": "https://sepolia.infura.io/v3/5faf703bac2f42d59237607b1079fcc0",
+    "ws_endpoint": "wss://sepolia.infura.io/ws/v3/5faf703bac2f42d59237607b1079fcc0",
+    "flashbots_rpc": "https://boost-relay.flashbots.net",
+    
+    "block_monitor_interval": "1s",
+    "metrics_update_interval": "5s",
+    "health_check_interval": "10s",
+    "builder_update_interval": "30s",
+    "prediction_update_period": "1m",
+    "resource_check_frequency": "1m",
+    "error_analysis_frequency": "5m",
+
+    "min_profit_threshold": "100000000000000",
+    "max_gas_price": "500000000000",
+    "max_pending_txns": 100,
+    "max_concurrent_bundles": 10,
+    "resource_usage_limit": 0.9,
+    "error_rate_threshold": 0.01,
+
+    "network_timeout": "5s",
+    "keep_alive": "30s",
+    "reconnect_backoff": "1s",
+    "max_reconnects": 5,
+    "metrics_interval": "1s",
+    "read_buffer_size": 4096,
+    "write_buffer_size": 4096,
+    "cpu_affinity": [0, 1, 2, 3],
+
+    "system": {
+        "cpu_pinning": [0, 1, 2, 3],
+        "huge_pages_count": 512,
+        "huge_page_size": "2MB",
+        "memory_limit": "16GB",
+        "dpdk_enabled": true,
+        "dpdk_ports": [0],
+        "dpdk_mem_channels": 4,
+        "ebpf_enabled": true,
+        "ebpf_program_path": "/usr/local/lib/mevbot/ebpf/tx_monitor.o"
+    },
+
+    "circuit_breaker": {
+        "enabled": true,
+        "error_threshold": 5,
+        "reset_interval": "1m",
+        "cooldown_period": "5m",
+        "min_healthy_period": "30m"
+    },
+
+    "rpc_rate_limit": {
+        "requests_per_second": 100.0,
+        "burst_size": 200,
+        "wait_timeout": "100ms"
+    },
+
+    "flashbots_rate_limit": {
+        "requests_per_second": 50.0,
+        "burst_size": 100,
+        "wait_timeout": "100ms"
+    },
+
+    "block_builder_rate_limit": {
+        "requests_per_second": 20.0,
+        "burst_size": 40,
+        "wait_timeout": "100ms"
+    },
+
+    "prometheus_enabled": true,
+    "prometheus_endpoint": "localhost:9090",
+    "alerting_enabled": true,
+    "alerting_endpoint": "localhost:9093",
+
+    "dpdk_config": {
+        "enabled": true,
+        "memory_channels": 4,
+        "memory_size": 16384,
+        "interface_name": "eth0",
+        "rx_queue_size": 4096,
+        "tx_queue_size": 4096,
+        "num_rx_queues": 4,
+        "num_tx_queues": 4,
+        "huge_page_dir": "/dev/hugepages",
+        "pci_whitelist": [],
+        "pci_blacklist": [],
+        "log_level": "info",
+        "socket_memory": "1024,1024",
+        "cpu_allow_list": "0-3"
+    },
+
+    "network": {
+        "http_endpoint": "https://sepolia.infura.io/v3/5faf703bac2f42d59237607b1079fcc0",
+        "ws_endpoint": "wss://sepolia.infura.io/ws/v3/5faf703bac2f42d59237607b1079fcc0",
+        "chain_id": 11155111,
+        "flashbots_relay": "https://boost-relay.flashbots.net"
+    }
+}
